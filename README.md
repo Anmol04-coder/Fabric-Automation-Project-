@@ -1,1 +1,55 @@
-This is an excellent request. A detailed README is essential for any automation project. I have structured the description based on the provided Jupyter notebook's execution flow, technologies used, and core functionality.📁 README: Microsoft Fabric Workspace & Git Provisioning AutomationThis Python notebook provides a robust, end-to-end automation solution for provisioning a Microsoft Fabric Workspace and establishing its source control integration with Azure DevOps Git. The script leverages Service Principal authentication to execute a series of Fabric and Azure AD REST API calls, ensuring consistency and governance across all newly deployed environments.🎯 Project GoalTo completely automate the traditionally manual, multi-step process of setting up a new Fabric development environment by executing one single script:Securely authenticate as a Service Principal.Check for, and create, the Fabric Workspace on a designated Capacity.Assign the necessary Azure AD Group as an Admin role for governance.Create a Shareable Git Connection credential using the Service Principal.Link the Workspace to an Azure DevOps Repository and branch.Initialize the Git connection and perform the first commit of new Fabric items.🛠️ Key Technologies & APIsComponentTechnology / API UsedPurposeWorkspace & Gitsempy.fabric.FabricRestClientCustom client wrapper for the Fabric REST APIs (e.g., /v1/workspaces, /v1/connections, /v1/git/connect).Authenticationazure.identity.ClientSecretCredentialSecurely authenticates the Service Principal using its ID and Secret.Group Lookupmsgraph-sdk (Microsoft Graph API)Used internally (or in helper functions) for querying and validating Azure AD Groups and users.Credential Storenotebookutils.mssparkutils.credentialsUsed to securely fetch sensitive credentials (Client ID, Secret, Tenant ID) from a linked Azure Key Vault.DevOps Metadatarequests with HTTPBasicAuth (using PAT)Used to fetch the internal Azure DevOps Repository ID from the DevOps REST API.EnvironmentFabric/Synapse Notebook (PySpark Kernel)Executes the Python automation code within the Fabric environment.⚙️ Automation Workflow (Step-by-Step)The notebook is structured into logical steps to ensure the provisioning is executed reliably and idempotently.1. Configuration & Security (Cells 1-10)Install Libraries: Installs the required msgraph-sdk.Secure Credential Retrieval: Fetches client_id, client_secret, and tenant_id from a specified Azure Key Vault using mssparkutils.credentials.getSecret.Define Configuration: Sets all required parameters in a single Python dictionary (config), including the target workspaceName, fabricCapacityName, Azure DevOps details (devOpsOrgName, devOpsRepoName, devOpsBranchName), and the target adminGroups.2. API Authentication (Cells 12-15)Graph API Client: Initializes GraphServiceClient using ClientSecretCredential for potential future Azure AD calls.Fabric API Client: Defines the custom ServicePrincipalTokenProvider class to handle token renewal for the Fabric API scope, and initializes the FabricRestClient (fabric_client).3. Workspace Provisioning (Cells 17-20)Get Capacity ID: Retrieves the internal ID for the configured Fabric Capacity (e.g., "mcaps").Workspace Creation: Checks if the target workspace (AutoProject) exists using GET /v1/workspaces. If it does not exist, it creates a new one using POST /v1/workspaces and associates it with the Capacity ID. The resultant workspace_id is stored.Role Assignment: Calls POST /v1/workspaces/{workspaceId}/roleAssignments to automatically assign the Admin role to the specified Azure AD Group ID, ensuring governance is baked in from the start.4. Git Integration (Cells 21-26)Get DevOps Repo ID: Calls the Azure DevOps REST API to retrieve the unique repositoryId using the configured Personal Access Token (PAT).Create Git Connection:Checks if a shareable AzureDevOpsSourceControl connection already exists using GET /v1/connections.If no match is found, it creates a new connection using POST /v1/connections, defining the Service Principal as the credential for the Git connection. The connection_id is retrieved.Link Workspace to Git: Calls POST /v1/workspaces/{workspaceId}/git/connect using the retrieved connection_id and all Git provider details (Organization, Project, Repo, Branch, Directory) to formally link the workspace to source control.Initialize Connection: Executes POST /v1/workspaces/{workspaceId}/git/initializeConnection to ensure the link is active.First Commit:Performs a GET /v1/workspaces/{workspaceId}/git/status to find all new, untracked items (like a new Lakehouse) and retrieve the required workspaceHead.Finally, calls POST /v1/workspaces/{workspaceId}/git/commitToGit using the workspaceHead to perform the initial commit of all items to the Git repository, completing the provisioning process.🔒 PrerequisitesBefore running the notebook, ensure you have configured the following:Azure Service Principal: Must be created in Azure AD with permissions to:Read Azure AD groups (Graph API: Group.Read.All).Read/Write Fabric Workspaces, Capacities, and Connections (Fabric/Power BI Service API: Tenant.ReadWrite.All).Azure Key Vault: The Service Principal credentials (client_id, client_secret, tenant_id) must be stored as secrets and the Fabric Workspace must have access to read them.Azure DevOps PAT (Optional but recommended for setup): A Personal Access Token with Code (Read) access for retrieving the internal Repository ID.Fabric Capacity: The target capacity (mcaps in the example) must exist.Azure AD Group: The security group to be assigned Admin role (Fabric_Automation in the example) must exist, and its Object ID must be used in the role assignment step.
+# 🚀 Microsoft Fabric & Azure DevOps Git Provisioning Automation
+
+This Python notebook automates the creation and Git-integration of a Microsoft Fabric Workspace using the Fabric REST APIs (via `sempy.fabric`) and Service Principal authentication.
+
+---
+
+## 🛠️ Key Technologies & Dependencies
+
+* **Primary Tool:** `sempy.fabric.FabricRestClient` (Fabric REST API client)
+* **Authentication:** `azure.identity.ClientSecretCredential`
+* **Secret Management:** `notebookutils.mssparkutils.credentials` (for Azure Key Vault integration)
+* **External API:** `msgraph-sdk` (Microsoft Graph API)
+* **Git API:** `requests` with `HTTPBasicAuth` (for Azure DevOps Repo ID lookup)
+
+---
+
+## ⚙️ Configuration Parameters (config dictionary)
+
+These are the main variables defining the deployment environment:
+
+| Parameter | Description | Example Value |
+| :--- | :--- | :--- |
+| `workspaceName` | Name of the Fabric workspace to create. | `AutoProject` |
+| `fabricCapacityName` | Display name of the Fabric capacity to host the workspace. | `mcaps` |
+| `devOpsOrgName` | Azure DevOps organization name. | `codereashu` |
+| `devOpsProjectName` | Azure DevOps project containing the repository. | `Automation` |
+| `devOpsRepoName` | Name of the Git repository. | `Auto_repo1` |
+| `devOpsBranchName` | Git branch to connect the workspace to. | `main` |
+| `adminGroups` | Azure AD group display name to assign Admin role. | `Fabric_Automation` |
+| `devOpsPAT` | Personal Access Token (PAT) for Azure DevOps. | `<PATToken>` |
+| `gitProviderType` | Must be `AzureDevOps` for this setup. | `AzureDevOps` |
+| `directoryName` | Sub-directory in the repository for workspace items. | `GitAuto` |
+
+---
+
+## 💻 Code Flow Breakdown (Cell by Cell)
+
+| Section | Cell Logic | Purpose |
+| :--- | :--- | :--- |
+| **Setup** | `%pip install -q msgraph-sdk` | Installs the required Microsoft Graph SDK package. |
+| **Libs** | `import json, requests, sempy.fabric as F, ClientSecretCredential, etc.` | Imports all necessary Python modules. |
+| **Key Vault** | `client_id = mssparkutils.credentials.getSecret(...)` | Fetches Service Principal credentials (`client_id`, `client_secret`, `tenant_id`) from Azure Key Vault. |
+| **Config** | Defines the main `config` dictionary with all project parameters. | Sets all environment and DevOps variables. |
+| **Graph API Auth** | `credential = ClientSecretCredential(...)` and `graph_client = GraphServiceClient(...)` | Initializes the credential and the Microsoft Graph API client for potential future group/user lookups. |
+| **Fabric API Auth** | Defines `ServicePrincipalTokenProvider` class. | Helper class to get the Fabric API access token using the Service Principal secret. |
+| **Fabric API Init** | `fabric_client = F.FabricRestClient(token_provider=token_provider)` | Initializes the main Fabric client used for all subsequent API calls. |
+| **Capacity Details** | `fabric_client.get("/v1/capacities")` | Retrieves the ID of the target Fabric capacity specified in the `config`. |
+| **Workspace Creation** | `fabric_client.get("/v1/workspaces")` followed by `fabric_client.post("/v1/workspaces", ...)` if not found. | Checks for the existing workspace and creates a new one on the specified capacity if it doesn't exist. Stores the resulting `workspace_id`. |
+| **Role Assignment** | `fabric_client.post(f"/v1/workspaces/{workspace_id}/roleAssignments", ...)` | Assigns the **Admin** role to a specified Azure AD Group ID. |
+| **Get DevOps Repo ID** | `requests.get("https://dev.azure.com/.../_apis/git/repositories/{repo}")` | Calls the Azure DevOps API (authenticating with PAT) to retrieve the required internal `repositoryId`. |
+| **Connect Git** | `fabric_client.post("/v1/connections", ...)` then `fabric_client.post(f"/v1/workspaces/{workspace_id}/git/connect", ...)` | **1.** Creates a reusable Git connection credential using the Service Principal. **2.** Links the Fabric workspace to the Azure DevOps repository and branch using the new connection ID. |
+| **Get Git Connection** | `fabric_client.get(f"/v1/workspaces/{workspace_id}/git/connection")` | Confirms the Git connection status. |
+| **Initialize Git** | `fabric_client.post(f"/v1/workspaces/{workspace_id}/git/initializeConnection")` | Initializes the Git connection for the first time. |
+| **Get Git Status** | `fabric_client.get(f"/v1/workspaces/{workspace_id}/git/status")` | Retrieves pending changes (new items like Lakehouses) and extracts the `workspace_head` for the commit. |
+| **Commit to Git** | `fabric_client.post(f"/v1/workspaces/{workspace_id}/git/commitToGit", ...)` | Executes the first Git commit of all new workspace items. |
